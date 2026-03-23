@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Snake Game</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #111;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Courier New', monospace;
+      color: #fff;
+    }
+
+    #game-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+    }
+
+    #hud {
+      display: flex;
+      gap: 2rem;
+      font-size: 13px;
+      color: #888;
+      letter-spacing: 0.05em;
+    }
+
+    #hud span {
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    #canvas-wrap {
+      position: relative;
+    }
+
+    #canvas {
+      display: block;
+      border: 1px solid #333;
+      border-radius: 6px;
+      background: #1a1a1a;
+      outline: none;
+    }
+
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.65);
+      border-radius: 6px;
+    }
+
+    #overlay h2 {
+      font-size: 22px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 6px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    #overlay p {
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.6);
+      margin-bottom: 20px;
+      letter-spacing: 0.04em;
+    }
+
+    #ov-btn {
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      padding: 10px 28px;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      border-radius: 5px;
+      cursor: pointer;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      transition: background 0.15s;
+    }
+
+    #ov-btn:hover {
+      background: rgba(255, 255, 255, 0.18);
+    }
+
+    #tip {
+      font-size: 12px;
+      color: #555;
+      letter-spacing: 0.03em;
+    }
+  </style>
+</head>
+<body>
+<div id="game-wrap">
+  <div id="hud">
+    score&nbsp;<span id="score-val">0</span>
+    &nbsp;&nbsp;high&nbsp;<span id="hi-val">0</span>
+    &nbsp;&nbsp;speed&nbsp;<span id="speed-val">1</span>
+  </div>
+
+  <div id="canvas-wrap">
+    <canvas id="canvas" tabindex="0"></canvas>
+    <div id="overlay">
+      <h2 id="ov-title">Snake</h2>
+      <p id="ov-sub">arrow keys or WASD · avoid the hurdles</p>
+      <button id="ov-btn">Start</button>
+    </div>
+  </div>
+
+  <div id="tip">click game area to capture keys &nbsp;·&nbsp; R to restart</div>
+</div>
+
+<script>
+  const CELL = 20, COLS = 21, ROWS = 21;
+  const W = COLS * CELL, H = ROWS * CELL;
+
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = W;
+  canvas.height = H;
+
+  const $ = id => document.getElementById(id);
+
+  let snake, dir, nextDir, food, hurdles, score, hiScore = 0;
+  let state = 'idle', loopId, speed;
+
+  // Snake spawns at col 5,4,3 row 10 — protect cols 1-9, rows 8-12
+  const SNAKE_START = [{x:5,y:10},{x:4,y:10},{x:3,y:10}];
+  const CLEAR_ZONE = new Set();
+  for (let cx = 1; cx <= 9; cx++)
+    for (let cy = 8; cy <= 12; cy++)
+      CLEAR_ZONE.add(`${cx},${cy}`);
+
+  function gc(x, y) { return { x: x * CELL, y: y * CELL }; }
+
+  function buildHurdles() {
+    const raw = [
+      // top bars
+      [2,3],[3,3],[4,3],[6,3],[7,3],
+      [13,3],[14,3],[16,3],[17,3],[18,3],
+      // mid-upper right
+      [12,8],[13,8],[15,8],[16,8],[17,8],
+      // center vertical pillars
+      [10,2],[10,3],[10,5],[10,6],
+      [10,8],[10,9],[10,11],[10,12],
+      [10,14],[10,15],[10,17],[10,18],
+      // lower bars
+      [2,14],[3,14],[5,14],[6,14],[7,14],
+      [13,14],[14,14],[16,14],[17,14],[18,14],
+      [2,18],[3,18],[4,18],[6,18],[7,18],
+      [13,18],[14,18],[16,18],[17,18],[18,18],
+      // corner clusters
+      [1,1],[2,1],[1,2],
+      [19,1],[18,1],[19,2],
+      [1,19],[2,19],[1,18],
+      [19,19],[18,19],[19,18],
+    ];
+    return raw
+      .filter(([cx, cy]) => !CLEAR_ZONE.has(`${cx},${cy}`))
+      .map(([cx, cy]) => gc(cx, cy));
+  }
+
+  function isSafe(x, y, body) {
+    if (hurdles.some(h => h.x === x && h.y === y)) return false;
+    if (body && body.some(s => s.x === x && s.y === y)) return false;
+    return true;
+  }
+
+  function randFood(body) {
+    let pos, tries = 0;
+    do {
+      pos = gc(Math.floor(Math.random() * COLS), Math.floor(Math.random() * ROWS));
+      tries++;
+    } while (!isSafe(pos.x, pos.y, body) && tries < 500);
+    return pos;
+  }
+
+  function init() {
+    snake = SNAKE_START.map(s => gc(s.x, s.y));
+    dir = { x: CELL, y: 0 };
+    nextDir = { ...dir };
+    hurdles = buildHurdles();
+    food = randFood(snake);
+    score = 0;
+    speed = 1;
+    $('score-val').textContent = 0;
+    $('speed-val').textContent = 1;
+  }
+
+  // --- Drawing helpers ---
+
+  function drawRR(x, y, w, h, r, fill) {
+    ctx.beginPath();
+    ctx.moveTo(x+r, y);
+    ctx.lineTo(x+w-r, y); ctx.arcTo(x+w, y, x+w, y+r, r);
+    ctx.lineTo(x+w, y+h-r); ctx.arcTo(x+w, y+h, x+w-r, y+h, r);
+    ctx.lineTo(x+r, y+h); ctx.arcTo(x, y+h, x, y+h-r, r);
+    ctx.lineTo(x, y+r); ctx.arcTo(x, y, x+r, y, r);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+
+  function drawHurdle(x, y) {
+    const P = 2;
+    ctx.fillStyle = '#534AB7';
+    ctx.beginPath(); ctx.roundRect(x+P, y+P, CELL-P*2, CELL-P*2, 3); ctx.fill();
+    ctx.fillStyle = '#7F77DD';
+    ctx.beginPath(); ctx.roundRect(x+P, y+P, CELL-P*2, 5, [3,3,0,0]); ctx.fill();
+    ctx.fillStyle = '#3C3489';
+    ctx.beginPath(); ctx.roundRect(x+P, y+CELL-P-4, CELL-P*2, 4, [0,0,3,3]); ctx.fill();
+  }
+
+  function draw(dead) {
+    ctx.clearRect(0, 0, W, H);
+
+    // dot grid
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    for (let cx = 0; cx < COLS; cx++)
+      for (let cy = 0; cy < ROWS; cy++) {
+        ctx.beginPath();
+        ctx.arc(cx*CELL+CELL/2, cy*CELL+CELL/2, 1, 0, Math.PI*2);
+        ctx.fill();
+      }
+
+    // hurdles
+    hurdles.forEach(h => drawHurdle(h.x, h.y));
+
+    // food
+    ctx.fillStyle = '#D85A30';
+    ctx.beginPath();
+    ctx.arc(food.x+CELL/2, food.y+CELL/2, CELL/2-3, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#F0997B';
+    ctx.beginPath();
+    ctx.arc(food.x+CELL/2-2, food.y+CELL/2-2, 3, 0, Math.PI*2);
+    ctx.fill();
+
+    // snake
+    snake.forEach((seg, i) => {
+      const headColor = dead ? '#E24B4A' : '#1D9E75';
+      const bodyColor = dead ? '#F09595' : '#5DCAA5';
+      drawRR(seg.x+2, seg.y+2, CELL-4, CELL-4, 4, i === 0 ? headColor : bodyColor);
+
+      // eyes on head
+      if (i === 0 && !dead) {
+        const ex  = dir.x > 0 ? 12 : dir.x < 0 ? 6 : 6;
+        const ey  = dir.y > 0 ? 12 : dir.y < 0 ? 6 : 7;
+        const ex2 = dir.y !== 0 ? ex + 7 : ex;
+        const ey2 = dir.x !== 0 ? ey + 7 : ey;
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(seg.x+ex,  seg.y+ey,  2.5, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(seg.x+ex2, seg.y+ey2, 2.5, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#1a1a1a';
+        ctx.beginPath(); ctx.arc(seg.x+ex+0.5,  seg.y+ey+0.5,  1.2, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(seg.x+ex2+0.5, seg.y+ey2+0.5, 1.2, 0, Math.PI*2); ctx.fill();
+      }
+    });
+  }
+
+  // --- Game logic ---
+
+  function speedFromScore(s) { return 1 + Math.floor(s / 3); }
+  function intervalFromSpeed(s) { return Math.max(80, 200 - (s - 1) * 15); }
+
+  function tick() {
+    dir = { ...nextDir };
+    const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+
+    const hitWall    = head.x < 0 || head.x >= W || head.y < 0 || head.y >= H;
+    const hitSelf    = snake.some(s => s.x === head.x && s.y === head.y);
+    const hitHurdle  = hurdles.some(h => h.x === head.x && h.y === head.y);
+
+    if (hitWall || hitSelf || hitHurdle) { gameOver(); return; }
+
+    snake.unshift(head);
+
+    if (head.x === food.x && head.y === food.y) {
+      score++;
+      $('score-val').textContent = score;
+      if (score > hiScore) { hiScore = score; $('hi-val').textContent = hiScore; }
+      food = randFood(snake);
+      speed = speedFromScore(score);
+      $('speed-val').textContent = speed;
+      clearTimeout(loopId);
+      draw(false);
+      schedule();
+      return;
+    } else {
+      snake.pop();
+    }
+
+    draw(false);
+    schedule();
+  }
+
+  function schedule() { loopId = setTimeout(tick, intervalFromSpeed(speed)); }
+
+  function gameOver() {
+    state = 'dead';
+    draw(true);
+    $('ov-title').textContent = 'Game Over';
+    $('ov-sub').textContent = 'Score: ' + score;
+    $('ov-btn').textContent = 'Restart';
+    $('overlay').style.display = 'flex';
+  }
+
+  function startGame() {
+    clearTimeout(loopId);
+    $('overlay').style.display = 'none';
+    state = 'playing';
+    init();
+    draw(false);
+    schedule();
+    canvas.focus();
+  }
+
+  // --- Input ---
+
+  const DIRS = {
+    ArrowUp:    { x: 0,     y: -CELL },
+    ArrowDown:  { x: 0,     y:  CELL },
+    ArrowLeft:  { x: -CELL, y: 0     },
+    ArrowRight: { x:  CELL, y: 0     },
+    w: { x: 0,     y: -CELL },
+    s: { x: 0,     y:  CELL },
+    a: { x: -CELL, y: 0     },
+    d: { x:  CELL, y: 0     },
+    W: { x: 0,     y: -CELL },
+    S: { x: 0,     y:  CELL },
+    A: { x: -CELL, y: 0     },
+    D: { x:  CELL, y: 0     },
+  };
+
+  document.addEventListener('keydown', e => {
+    if (state !== 'playing') return;
+    const d = DIRS[e.key];
+    if (d) {
+      e.preventDefault();
+      if (d.x !== -dir.x || d.y !== -dir.y) nextDir = d;
+    }
+    if (e.key === 'r' || e.key === 'R') { clearTimeout(loopId); startGame(); }
+  });
+
+  canvas.addEventListener('click', () => canvas.focus());
+
+  $('ov-btn').addEventListener('click', startGame);
+
+  // Initial render
+  draw(false);
+</script>
+</body>
+</html>
